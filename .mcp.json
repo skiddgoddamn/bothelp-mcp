@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "bothelp-mcp": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/src/index.mjs"],
+      "env": {
+        "BOTHELP_SUBDOMAIN": "${BOTHELP_SUBDOMAIN:-}",
+        "BOTHELP_SESSION_ID": "${BOTHELP_SESSION_ID:-}"
+      }
+    }
+  }
+}

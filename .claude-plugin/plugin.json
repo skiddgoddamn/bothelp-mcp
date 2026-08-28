@@ -1,0 +1,12 @@
+{
+  "name": "bothelp-mcp",
+  "displayName": "BotHelp MCP",
+  "version": "0.1.0",
+  "description": "MCP-сервер для чтения и сборки сценариев ботов в BotHelp через приватный WebSocket-RPC конструктора.",
+  "author": { "name": "skiddgoddamn" },
+  "homepage": "https://bothelp.io",
+  "repository": "https://github.com/skiddgoddamn/bothelp-mcp",
+  "license": "MIT",
+  "keywords": ["mcp", "bothelp", "telegram", "bot", "funnel", "claude-code"],
+  "mcpServers": "./.mcp.json"
+}
