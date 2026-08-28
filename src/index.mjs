@@ -24,7 +24,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 
-const VERSION = "0.1.0";
+const VERSION = "0.1.2";
 const CONFIG_DIR = path.join(os.homedir(), ".bothelp-mcp");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
 
@@ -198,8 +198,12 @@ async function connect() {
     if (hs && hs.error) throw new Error("authHandshake отклонён: " + JSON.stringify(hs.error));
     c.operator = (hs && hs.operator) || info.operator || null;
     c.ready = true;
-    c.ping = setInterval(() => { try { c.sock.send(JSON.stringify("primus::ping::" + Date.now())); } catch { /* ignore */ } }, 25000);
-    if (c.ping.unref) c.ping.unref();
+    // NB: НЕ шлём client-initiated primus::ping. Сервер сам присылает heartbeat,
+    // на который мы отвечаем pong (см. handleMsg). Собственные ping-кадры со временем
+    // «протухают» write-сессию на сервере (evAddBot → error 100 «Failed to update bot»),
+    // хотя сокет открыт и чтения проходят. Диагностировано живьём: свежее соединение всегда
+    // пишет успешно, долгоживущее с self-ping — нет. Idle-дроп безопасен: connect() переподключит.
+    c.ping = null;
     return c;
   })()
     .then((c) => { conn = c; return c; })
@@ -207,7 +211,33 @@ async function connect() {
   return connecting;
 }
 
-async function rpc(method, data, timeout) { const c = await connect(); return rpcOn(c, method, data, timeout); }
+// Методы, изменяющие граф. При сбое (error 100 / таймаут / закрытый сокет) — переподключиться
+// свежим соединением и повторить ОДИН раз: свежее соединение всегда пишет успешно.
+const WRITE_METHODS = new Set([
+  "evAddBot", "evDeleteBot", "evPutComplexBot", "evPutComplexBotDiagram",
+  "evGenerateComplexBotToken", "evCopyComplexBotByToken",
+]);
+function dropConn() {
+  const c = conn; conn = null;
+  if (c) { try { if (c.ping) clearInterval(c.ping); } catch { /* ignore */ } try { c.sock.close(); } catch { /* ignore */ } }
+}
+async function rpc(method, data, timeout) {
+  const c = await connect();
+  let resp;
+  try {
+    resp = await rpcOn(c, method, data, timeout);
+  } catch (e) {
+    if (!WRITE_METHODS.has(method)) throw e;      // read: пробрасываем ошибку как есть
+    dropConn();
+    return rpcOn(await connect(), method, data, timeout);  // одна попытка на свежем соединении
+  }
+  // серверная ошибка 100 на записи — верный признак протухшего соединения: реконнект + ретрай
+  if (WRITE_METHODS.has(method) && resp && resp.error && resp.error.code === 100) {
+    dropConn();
+    return rpcOn(await connect(), method, data, timeout);
+  }
+  return resp;
+}
 
 // ---------- граф: сводка + извлечение рёбер ----------
 // Переходы в BotHelp зашиты экшенами {action:"run_bot", value:"<referral цели>"} —
@@ -257,7 +287,14 @@ const TOOLS = [
   { name: "list_scenarios", description: "Список сценариев (complexBots) воркспейса: id, referral, title, enabled, adapterType. id нужен для get_scenario/add_block/save_layout.", inputSchema: { type: "object", properties: {} } },
   { name: "list_funnels", description: "Список воронок (funnels): id, referral, title, isEnabled. Read-only.", inputSchema: { type: "object", properties: {} } },
   { name: "get_scenario", description: "Получить сценарий по id (evGetComplexBot). Граф БОЛЬШОЙ (могут быть сотни блоков, >100КБ) — по умолчанию отдаётся summary (узлы: referral/type/title/позиция + рёбра `to` из run_bot). raw:true — полный JSON; saveToFile — записать полный граф на диск и вернуть только сводку+путь.", inputSchema: { type: "object", properties: { id: { type: "string" }, raw: { type: "boolean", description: "true = полный JSON сценария целиком" }, saveToFile: { type: "string", description: "Путь: записать полный граф (JSON) на диск, вернуть сводку + путь" } }, required: ["id"] } },
-  { name: "add_block", description: "Создать/обновить блок сценария (evAddBot). Передай bot-объект инлайном (bot) или файлом (botFile). Форма: {id?, title, referral, adapterType, adapterConnectorId, parentReferral, enabled, aiAgent, flowData:{steps:[...]}}. Переходы задаются экшенами {action:'run_bot', value:'<referral цели>'} в кнопках/условиях. Возвращает сохранённый блок (type=fb-referral/action/condition/delay).", inputSchema: { type: "object", properties: { bot: { type: "object", description: "Объект блока (обёртка {bot:...} добавляется автоматически)" }, botFile: { type: "string", description: "Путь к локальному JSON блока вместо инлайн bot" } } } },
+  { name: "add_block", description: "Создать/обновить блок сценария (evAddBot). Передай bot-объект инлайном (bot) или файлом (botFile). Форма: {id?, title, referral, adapterType, adapterConnectorId, parentReferral, enabled, flowData:{steps:[...]}}.\n" +
+    "ПРАВИЛА PAYLOAD (реверс живого конструктора flow2):\n" +
+    "• Рёбра/переходы = экшены {action:'run_bot', value:'<referral цели>'}: в кнопках (buttons[].actions), в условиях (conditions.positive/negative), в question.withoutAnswerAction и в АВТО-переходе followupActions.actions (при isFollowupEnabled:true).\n" +
+    "• DELAY-узел (задержка) = type:'delay' + isFollowupEnabled:true + followupActions.timebox {type:'minutes'|'hours'|'days'|'immediately', value:N, timeCondition:{condition:'any',onHour:0,onMinute:0,offHour:0,offMinute:0}, daysOfWeek:[1,1,1,1,1,1,1], complexValue:null}. Само ребро задержки — followupActions.actions:[{action:'run_bot',value:'<цель>'}].\n" +
+    "• АВТО-дожим сообщения = у fb-referral followupActions.timebox (задержка) + actions run_bot. Тег = отдельный узел type:'action' с actions:[{action:'add_tag', value:<tagId>}].\n" +
+    "• Кнопка-переход (postback→run_bot): buttons[].payload ОБЯЗАН начинаться с 'whbutton-startBot-' (иначе error 100 «Failed to update bot»). URL-кнопка = type:'deeplink_url'/'web_url'.\n" +
+    "• НОВЫЙ блок с контентом создавай в 2 фазы: сначала пустой (flowData.steps:[], enabled:false), затем правкой заполни steps/actions/followup (одиночный populated create сервер отклоняет).\n" +
+    "• soft:false шлётся автоматически. referral нового блока — клиентский (13-значный ms). Возвращает сохранённый блок.", inputSchema: { type: "object", properties: { bot: { type: "object", description: "Объект блока (обёртка {bot:...} добавляется автоматически)" }, botFile: { type: "string", description: "Путь к локальному JSON блока вместо инлайн bot" } } } },
   { name: "delete_block", description: "Удалить блок по числовому id (evDeleteBot → {success:true}).", inputSchema: { type: "object", properties: { id: { type: "string", description: "числовой id блока (поле id, не referral)" } }, required: ["id"] } },
   { name: "save_layout", description: "Сохранить раскладку канваса (evPutComplexBotDiagram): координаты узлов. Передай complexBotId и coordinates:[{referral,x,y}]. Делай ПОСЛЕ add_block, чтобы новый блок встал на место.", inputSchema: { type: "object", properties: { complexBotId: { type: "string" }, coordinates: { type: "array", items: { type: "object", properties: { referral: { type: "string" }, x: { type: "number" }, y: { type: "number" } }, required: ["referral", "x", "y"] } } }, required: ["complexBotId", "coordinates"] } },
   { name: "update_scenario", description: "Сохранить настройки сценария / точку входа (evPutComplexBot). Передай complexBot-объект (в т.ч. startStepReferral — какой блок стартовый, title, enabled). Обёртка {complexBot:...} добавляется автоматически.", inputSchema: { type: "object", properties: { complexBot: { type: "object" }, complexBotFile: { type: "string", description: "Путь к локальному JSON вместо инлайн complexBot" } } } },

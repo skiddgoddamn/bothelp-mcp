@@ -1,7 +1,7 @@
 {
   "name": "bothelp-mcp",
   "displayName": "BotHelp MCP",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "MCP-сервер для чтения и сборки сценариев ботов в BotHelp через приватный WebSocket-RPC конструктора.",
   "author": { "name": "skiddgoddamn" },
   "homepage": "https://bothelp.io",
