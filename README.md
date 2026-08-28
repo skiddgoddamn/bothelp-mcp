@@ -42,18 +42,23 @@ heartbeat: "primus::ping::<ts>" / "primus::pong::<ts>"
 
 ## Авторизация
 
-Сессия оператора (не Open-API токен `id:secret`):
+Сессия оператора (не Open-API токен `id:secret`). Два способа:
 
-1. Залогинься в воркспейс и открой любой сценарий (`https://<workspace>.bothelp.io/flow2/flow-builder/<id>/edit`).
-2. DevTools (F12) → **Network** → фильтр **WS** → соединение `/ws/...` → **Messages**.
-3. Первый отправленный кадр — `{"method":"authHandshake","data":{"sessionId":"..."}}`. Скопируй `sessionId`.
-4. `subdomain` = `<workspace>` из адреса.
-5. В чате: пришли их — ассистент вызовет `set_session`.
+**A. Проще — `login_password`** (email/пароль → sessionId сам):
+`login_password { subdomain, email, password }`. Под капотом
+`POST https://<sub>.bothelp.io/login/<sub>?source=web {login,password}` → `{sessionId}`.
+Пароль нигде не сохраняется — в конфиг пишется только полученный `sessionId`.
 
-Под капотом: `GET https://<sub>.bothelp.io/session/<sub>/<sessionId>` → `{sessionId, operator, wsUrl}` → ws + `authHandshake`.
-Если бэкенд требует куку — передай `cookie` в `set_session`.
+**B. Без пароля — `set_session`** (готовый sessionId):
+1. Залогинься и открой сценарий (`https://<workspace>.bothelp.io/flow2/flow-builder/<id>/edit`).
+2. DevTools (F12) → **Network** → фильтр **WS** → `/ws/...` → **Messages**.
+3. Первый кадр — `{"method":"authHandshake","data":{"sessionId":"..."}}`. Скопируй `sessionId`.
+4. `set_session { subdomain, sessionId }`. Если бэкенд требует куку — передай `cookie`.
 
-ENV-альтернатива: `BOTHELP_SUBDOMAIN`, `BOTHELP_SESSION_ID`, `BOTHELP_COOKIE`.
+Под капотом обоих: `GET https://<sub>.bothelp.io/session/<sub>/<sessionId>` → `{sessionId, operator, wsUrl}` → ws + `authHandshake`.
+
+ENV: `BOTHELP_SUBDOMAIN`, `BOTHELP_SESSION_ID`, `BOTHELP_COOKIE`.
+**Headless/CI:** задай `BOTHELP_SUBDOMAIN` + `BOTHELP_EMAIL` + `BOTHELP_PASSWORD` — сервер сам залогинится при первом вызове.
 
 ## Установка
 
@@ -71,6 +76,7 @@ ENV-альтернатива: `BOTHELP_SUBDOMAIN`, `BOTHELP_SESSION_ID`, `BOTHEL
 | Tool | Метод BotHelp | Назначение |
 |---|---|---|
 | `setup` | — | статус сессии + инструкция |
+| `login_password` | — | вход по subdomain+email+паролю → sessionId (проще всего) |
 | `set_session` | — | сохранить subdomain + sessionId (+cookie) |
 | `whoami` | `authHandshake` | проверить сессию, вернуть оператора |
 | `list_scenarios` | `evGetComplexBots` | список сценариев (id/referral/title/enabled) |

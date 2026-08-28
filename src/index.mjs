@@ -53,15 +53,14 @@ function isAuthed() { const c = getCfg(); return !!(c.subdomain && c.sessionId);
 
 const NO_AUTH_HELP =
   "Нет доступа к конструктору BotHelp — не настроена сессия.\n\n" +
-  "Как подключить (помоги пользователю по шагам):\n" +
-  "1) Залогинься в свой воркспейс BotHelp и открой любой сценарий (URL вида\n" +
-  "   https://<workspace>.bothelp.io/flow2/flow-builder/<id>/edit).\n" +
-  "2) DevTools (F12) → вкладка Network → фильтр WS → открой соединение `/ws/...` → Messages.\n" +
-  "3) Первый ОТПРАВЛЕННЫЙ кадр = {\"method\":\"authHandshake\",\"data\":{\"sessionId\":\"...\"}}.\n" +
-  "   Скопируй значение sessionId.\n" +
-  "4) subdomain — это `<workspace>` из адреса (например `formula`).\n" +
-  "5) Пришли их сюда — я вызову set_session (subdomain + sessionId). sessionId живёт, пока не выйдешь из аккаунта.\n\n" +
-  "Подсказка ассистенту: попроси прислать subdomain и sessionId, затем вызови set_session.";
+  "ПРОЩЕ ВСЕГО (login_password): пришли subdomain (воркспейс, напр. `formula`) + email + пароль\n" +
+  "от аккаунта BotHelp — я вызову login_password, получу sessionId сам и сохраню.\n\n" +
+  "Альтернатива (set_session, без пароля):\n" +
+  "1) Залогинься в воркспейс и открой любой сценарий (https://<workspace>.bothelp.io/flow2/flow-builder/<id>/edit).\n" +
+  "2) DevTools (F12) → Network → фильтр WS → соединение `/ws/...` → Messages.\n" +
+  "3) Первый ОТПРАВЛЕННЫЙ кадр = {\"method\":\"authHandshake\",\"data\":{\"sessionId\":\"...\"}} — скопируй sessionId.\n" +
+  "4) subdomain = `<workspace>` из адреса. Вызови set_session (subdomain + sessionId).\n\n" +
+  "Подсказка ассистенту: попроси email+пароль → login_password; либо subdomain+sessionId → set_session.";
 
 // ---------- WebSocket transport (Primus-совместимо) ----------
 let WSImpl = globalThis.WebSocket;
@@ -118,6 +117,42 @@ export function rpcOn(c, method, data, timeout = 30000) {
 
 let conn = null, connecting = null;
 
+// Упрощённый логин по email/паролю → sessionId (реверс формы auth.bothelp.io):
+// POST https://<sub>.bothelp.io/login/<sub>?source=web  {login,password} → {sessionId|sessionToken}
+async function passwordLogin(subdomain, email, password) {
+  const url = `https://${subdomain}.bothelp.io/login/${encodeURIComponent(subdomain)}?source=web`;
+  let res;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Requested-With": "XMLHttpRequest",
+        Origin: `https://${subdomain}.bothelp.io`,
+        Referer: `https://${subdomain}.bothelp.io/auth`,
+      },
+      body: JSON.stringify({ login: email, password }),
+    });
+  } catch (e) { throw new Error(`Не достучались до ${subdomain}.bothelp.io: ${e?.message || e}`); }
+  const text = await res.text();
+  let data = null; try { data = JSON.parse(text); } catch { /* not json */ }
+  if (!res.ok) throw new Error(`Логин отклонён (HTTP ${res.status}). ${text.slice(0, 200)}`);
+  if (data && data.error) throw new Error(`Логин отклонён: ${JSON.stringify(data.error)} (обычно неверный email/пароль).`);
+  const sid = data && (data.sessionId || data.sessionToken);
+  if (!sid) throw new Error(`Логин не вернул sessionId. Проверь subdomain/email/пароль. Ответ: ${text.slice(0, 200)}`);
+  return String(sid);
+}
+
+// Гарантировать сессию: если не задана, но в env есть BOTHELP_EMAIL/PASSWORD (+SUBDOMAIN) — авто-логин.
+async function ensureSession() {
+  if (isAuthed()) return;
+  const sub = envVal(process.env.BOTHELP_SUBDOMAIN);
+  const email = envVal(process.env.BOTHELP_EMAIL);
+  const pw = envVal(process.env.BOTHELP_PASSWORD);
+  if (sub && email && pw) { saveCfg({ subdomain: sub, sessionId: await passwordLogin(sub, email, pw) }); return; }
+  throw new Error(NO_AUTH_HELP);
+}
+
 async function resolveSession() {
   const { subdomain, sessionId, cookie } = getCfg();
   const url = `https://${subdomain}.bothelp.io/session/${encodeURIComponent(subdomain)}/${encodeURIComponent(sessionId)}`;
@@ -140,7 +175,7 @@ async function connect() {
   if (conn && conn.ready && conn.sock.raw.readyState === 1) return conn;
   if (connecting) return connecting;
   connecting = (async () => {
-    if (!isAuthed()) throw new Error(NO_AUTH_HELP);
+    await ensureSession();
     const { subdomain } = getCfg();
     const info = await resolveSession();
     const endpoint = `${info.wsUrl.proto}://${info.wsUrl.host}${info.wsUrl.pathname}`;
@@ -216,7 +251,8 @@ function readJsonFile(p) {
 // ---------- MCP tools ----------
 const TOOLS = [
   { name: "setup", description: "Показать статус авторизации и пошаговую инструкцию подключения. Вызывай первым при незнании, что делать, или при ошибке доступа.", inputSchema: { type: "object", properties: {} } },
-  { name: "set_session", description: "Сохранить сессию конструктора BotHelp: subdomain (воркспейс, напр. `formula`) и sessionId (из DevTools → WS → authHandshake). Опц. cookie, если бэкенд её требует. Применяется сразу.", inputSchema: { type: "object", properties: { subdomain: { type: "string", description: "Поддомен воркспейса, часть <sub>.bothelp.io" }, sessionId: { type: "string", description: "sessionId из кадра authHandshake" }, cookie: { type: "string", description: "(необязательно) заголовок Cookie для /session" } }, required: ["subdomain", "sessionId"] } },
+  { name: "login_password", description: "УПРОЩЁННЫЙ вход: по subdomain + email + паролю от аккаунта BotHelp получить sessionId и сохранить сессию (реверс формы логина: POST /login/<sub>?source=web). Не нужен DevTools. Пароль нигде не сохраняется — хранится только полученный sessionId.", inputSchema: { type: "object", properties: { subdomain: { type: "string", description: "Воркспейс, часть <sub>.bothelp.io (напр. formula)" }, email: { type: "string" }, password: { type: "string" } }, required: ["subdomain", "email", "password"] } },
+  { name: "set_session", description: "Сохранить сессию конструктора BotHelp: subdomain (воркспейс, напр. `formula`) и sessionId (из DevTools → WS → authHandshake). Опц. cookie, если бэкенд её требует. Применяется сразу. Альтернатива login_password.", inputSchema: { type: "object", properties: { subdomain: { type: "string", description: "Поддомен воркспейса, часть <sub>.bothelp.io" }, sessionId: { type: "string", description: "sessionId из кадра authHandshake" }, cookie: { type: "string", description: "(необязательно) заголовок Cookie для /session" } }, required: ["subdomain", "sessionId"] } },
   { name: "whoami", description: "Проверить сессию: подключиться и вернуть оператора (id, login, name). Быстрый тест авторизации.", inputSchema: { type: "object", properties: {} } },
   { name: "list_scenarios", description: "Список сценариев (complexBots) воркспейса: id, referral, title, enabled, adapterType. id нужен для get_scenario/add_block/save_layout.", inputSchema: { type: "object", properties: {} } },
   { name: "list_funnels", description: "Список воронок (funnels): id, referral, title, isEnabled. Read-only.", inputSchema: { type: "object", properties: {} } },
@@ -239,6 +275,19 @@ async function handleCall(params) {
           `Проверь через whoami. Дальше: list_scenarios, get_scenario, add_block, save_layout.`);
       }
       return okResult(NO_AUTH_HELP);
+    }
+    case "login_password": {
+      const subdomain = String(a.subdomain || "").trim().replace(/\.bothelp\.io.*$/i, "").replace(/^https?:\/\//, "");
+      const email = String(a.email || "").trim();
+      const password = String(a.password || "");
+      if (!subdomain || !email || !password) throw new Error("Нужны subdomain, email и password.");
+      const sessionId = await passwordLogin(subdomain, email, password);
+      saveCfg({ subdomain, sessionId });
+      if (conn) { conn.sock.close(); conn = null; }
+      let check = "";
+      try { const c = await connect(); check = `\nВошли как ${c.operator?.login || c.operator?.name || "?"}.`; }
+      catch (e) { check = `\n⚠️ sessionId получен, но подключение не прошло: ${(e.message || "").split("\n")[0]}`; }
+      return okResult(`✅ Вход по паролю успешен, сессия сохранена (${CONFIG_FILE}). Пароль не сохранён.${check}`);
     }
     case "set_session": {
       const subdomain = String(a.subdomain || "").trim().replace(/\.bothelp\.io.*$/i, "").replace(/^https?:\/\//, "");
