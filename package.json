@@ -1,6 +1,6 @@
 {
   "name": "bothelp-mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MCP server to read and BUILD BotHelp bot scenarios (Telegram/VK/MAX/WhatsApp) via the constructor's private WebSocket-RPC. Zero-dependency on Node >=22.",
   "type": "module",
   "bin": { "bothelp-mcp": "src/index.mjs" },

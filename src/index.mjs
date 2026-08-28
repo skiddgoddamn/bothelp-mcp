@@ -332,7 +332,9 @@ async function handleCall(params) {
       const bot = a.botFile ? readJsonFile(a.botFile) : a.bot;
       if (!bot || typeof bot !== "object") throw new Error("Передай bot (объект блока) или botFile (путь к JSON).");
       const inner = bot.bot && typeof bot.bot === "object" ? bot.bot : bot; // допускаем и обёрнутый, и голый
-      return okResult(await rpc("evAddBot", { bot: inner }));
+      // ВАЖНО: сервер требует поле soft в конверте data — без него evAddBot возвращает {error:100 "Failed to update bot"}.
+      // soft:false = обычная запись (создание/полное обновление блока), как шлёт flow-builder. Проверено живьём (customerId 38252).
+      return okResult(await rpc("evAddBot", { bot: inner, soft: a.soft === true }));
     }
     case "delete_block": {
       const id = Number(a.id);
