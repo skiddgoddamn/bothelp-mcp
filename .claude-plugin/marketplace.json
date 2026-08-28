@@ -1,0 +1,12 @@
+{
+  "name": "bothelp",
+  "owner": { "name": "skiddgoddamn", "url": "https://github.com/skiddgoddamn" },
+  "description": "MCP-плагин BotHelp для Claude Code.",
+  "plugins": [
+    {
+      "name": "bothelp-mcp",
+      "source": "./",
+      "description": "Чтение и сборка сценариев ботов BotHelp (Telegram/VK/MAX/WhatsApp) через приватный WS-RPC конструктора."
+    }
+  ]
+}
